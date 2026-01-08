@@ -1,63 +1,132 @@
+import os
 import cv2
 import torch
 import numpy as np
-import os
 from PIL import Image
-
+import torchxrayvision as xrv
 
 from models.classifier import load_model, predict
 from models.gradcam import generate_heatmap
 from models.segmenter import segment_from_cam
-from torchvision import transforms
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor()
-])
 
-def run(image_path, model_name="densenet121"):
+def crop_lung_region(img: Image.Image):
+    """
+    Crop bỏ cổ, chữ, mép trên/dưới
+    (heuristic, KHÔNG phải segmentation)
+    """
+    w, h = img.size
+    return img.crop((
+        int(0.15 * w),
+        int(0.18 * h),
+        int(0.85 * w),
+        int(0.92 * h)
+    ))
+
+
+def run(image_path, model_name="densenet121_nih"):
     os.makedirs("outputs", exist_ok=True)
 
-    # Load model
-    model = load_model(model_name).to(device)
+    # ===============================
+    # LOAD MODEL
+    # ===============================
+    model = load_model(model_name).to(DEVICE)
+    model.eval()
 
-    # Load image
-    img_bgr = cv2.imread(image_path)
-    # OpenCV → RGB
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    # ===============================
+    # MODEL-SPECIFIC CONFIG
+    # ===============================
+    if "resnet50" in model_name:
+        IMG_SIZE = 512
+    else:
+        IMG_SIZE = 224
 
-    # numpy → PIL Image (BẮT BUỘC)
-    img_pil = Image.fromarray(img_rgb)
+    # ===============================
+    # LOAD IMAGE (NIH: GRAYSCALE)
+    # ===============================
+    img = Image.open(image_path).convert("L")
+    img = crop_lung_region(img)
+    img = img.resize((IMG_SIZE, IMG_SIZE))
 
-    # dùng cho Grad-CAM overlay
-    img_norm = np.array(img_pil).astype("float32") / 255.0
+    # PIL → numpy
+    img_np = np.array(img).astype(np.float32)
 
-    # FIX: resize về 224x224
-    img_norm = cv2.resize(img_norm, (224, 224))
+    # ===============================
+    # NIH NORMALIZATION (VERY IMPORTANT)
+    # [0,255] → [-1024,1024]
+    # ===============================
+    img_np = xrv.datasets.normalize(img_np, maxval=255)
 
-    # transform chuẩn torchvision
-    image_tensor = transform(img_pil).unsqueeze(0).to(device)
+    # numpy → torch tensor [1,1,H,W]
+    image_tensor = torch.from_numpy(img_np)
+    image_tensor = image_tensor.unsqueeze(0).unsqueeze(0).to(DEVICE)
 
-    # Prediction
+    # ===============================
+    # VIS IMAGE FOR GRAD-CAM
+    # [-1024,1024] → [0,1]
+    # ===============================
+    img_vis = (img_np / 1024.0 + 1.0) / 2.0
+    img_vis = np.clip(img_vis, 0, 1)
+    img_rgb = np.stack([img_vis] * 3, axis=-1)
+
+    # ===============================
+    # PREDICTION
+    # ===============================
     pred = predict(model, image_tensor)
 
-    # Grad-CAM
-    heatmap = generate_heatmap(model, image_tensor, img_norm)
-    heatmap_path = "outputs/heatmap.png"
-    cv2.imwrite(heatmap_path, cv2.cvtColor(heatmap, cv2.COLOR_RGB2BGR))
+    if len(pred["positive_findings"]) == 0:
+        return {
+            "model": model_name,
+            "positive_findings": [],
+            "all_probabilities": pred["all_probs"],
+            "note": "No confident abnormal findings detected."
+        }
 
-    # ROI mask
+    # ===============================
+    # SELECT TOP DISEASE
+    # ===============================
+    top_label, top_prob = max(
+        pred["all_probs"].items(),
+        key=lambda x: x[1]
+    )
+    class_idx = list(pred["all_probs"].keys()).index(top_label)
+
+    # ===============================
+    # GRAD-CAM
+    # ===============================
+    heatmap = generate_heatmap(
+        model,
+        image_tensor,
+        img_rgb,
+        class_idx
+    )
+
+    heatmap_path = "outputs/heatmap.png"
+    cv2.imwrite(
+        heatmap_path,
+        cv2.cvtColor(heatmap, cv2.COLOR_RGB2BGR)
+    )
+
+    # ===============================
+    # ROI MASK (OPTIONAL)
+    # ===============================
     gray_cam = cv2.cvtColor(heatmap, cv2.COLOR_RGB2GRAY) / 255.0
     mask = segment_from_cam(gray_cam)
+
     mask_path = "outputs/mask.png"
     cv2.imwrite(mask_path, mask)
 
     return {
-        "confidence": pred["confidence"],
-        "predicted_class": pred["predicted_class"],
+        "model": model_name,
+        "positive_findings": pred["positive_findings"],
+        "all_probabilities": pred["all_probs"],
+        "top_disease": {
+            "label": top_label,
+            "probability": float(top_prob)
+        },
         "heatmap": heatmap_path,
         "roi_mask": mask_path,
-        "note": "For clinical decision support only. Not a diagnosis."
+        "note": "For clinical decision support only. Not a medical diagnosis."
     }
