@@ -1,3 +1,4 @@
+# agent.py
 import os
 import cv2
 import torch
@@ -5,18 +6,15 @@ import numpy as np
 from PIL import Image
 import torchxrayvision as xrv
 
-from models.classifier import load_model, predict
+from models.classifier import load_model, predict, NIH_LABELS
 from models.gradcam import generate_heatmap
 from models.segmenter import segment_from_cam
+from models.vit_attention import generate_vit_attention
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def crop_lung_region(img: Image.Image):
-    """
-    Crop bỏ cổ, chữ, mép trên/dưới
-    (heuristic, KHÔNG phải segmentation)
-    """
     w, h = img.size
     return img.crop((
         int(0.15 * w),
@@ -29,52 +27,75 @@ def crop_lung_region(img: Image.Image):
 def run(image_path, model_name="densenet121_nih"):
     os.makedirs("outputs", exist_ok=True)
 
-    # ===============================
-    # LOAD MODEL
-    # ===============================
-    model = load_model(model_name).to(DEVICE)
-    model.eval()
+    model = load_model(model_name)
+    is_vit = "vit" in model_name
+    is_resnet = "resnet50" in model_name
+
+    IMG_SIZE = 512 if is_resnet else 224
 
     # ===============================
-    # MODEL-SPECIFIC CONFIG
+    # LOAD IMAGE
     # ===============================
-    if "resnet50" in model_name:
-        IMG_SIZE = 512
+    if is_vit:
+        img = Image.open(image_path).convert("RGB")
+        img = crop_lung_region(img)
+        img = img.resize((IMG_SIZE, IMG_SIZE))
+
+        img_np = np.array(img).astype(np.float32) / 255.0
+        image_tensor = (
+            torch.from_numpy(img_np)
+            .permute(2, 0, 1)
+            .unsqueeze(0)
+            .to(DEVICE)
+        )
+
+        img_rgb = img_np
+
     else:
-        IMG_SIZE = 224
+        img = Image.open(image_path).convert("L")
+        img = crop_lung_region(img)
+        img = img.resize((IMG_SIZE, IMG_SIZE))
 
-    # ===============================
-    # LOAD IMAGE (NIH: GRAYSCALE)
-    # ===============================
-    img = Image.open(image_path).convert("L")
-    img = crop_lung_region(img)
-    img = img.resize((IMG_SIZE, IMG_SIZE))
+        img_np = np.array(img).astype(np.float32)
+        img_np = xrv.datasets.normalize(img_np, maxval=255)
 
-    # PIL → numpy
-    img_np = np.array(img).astype(np.float32)
+        image_tensor = (
+            torch.from_numpy(img_np)
+            .unsqueeze(0)
+            .unsqueeze(0)
+            .to(DEVICE)
+        )
 
-    # ===============================
-    # NIH NORMALIZATION (VERY IMPORTANT)
-    # [0,255] → [-1024,1024]
-    # ===============================
-    img_np = xrv.datasets.normalize(img_np, maxval=255)
-
-    # numpy → torch tensor [1,1,H,W]
-    image_tensor = torch.from_numpy(img_np)
-    image_tensor = image_tensor.unsqueeze(0).unsqueeze(0).to(DEVICE)
-
-    # ===============================
-    # VIS IMAGE FOR GRAD-CAM
-    # [-1024,1024] → [0,1]
-    # ===============================
-    img_vis = (img_np / 1024.0 + 1.0) / 2.0
-    img_vis = np.clip(img_vis, 0, 1)
-    img_rgb = np.stack([img_vis] * 3, axis=-1)
+        img_vis = (img_np / 1024.0 + 1.0) / 2.0
+        img_vis = np.clip(img_vis, 0, 1)
+        img_rgb = np.stack([img_vis] * 3, axis=-1)
 
     # ===============================
     # PREDICTION
     # ===============================
-    pred = predict(model, image_tensor)
+    if is_vit:
+        with torch.no_grad():
+            logits, attentions = model(
+                image_tensor
+            )
+            probs = torch.sigmoid(logits).squeeze().cpu().numpy()
+
+        all_probs = dict(zip(NIH_LABELS, probs.tolist()))
+
+        positives = [
+            {"disease": k, "probability": float(v)}
+            for k, v in all_probs.items()
+            if v >= 0.5
+        ]
+
+        pred = {
+            "positive_findings": positives,
+            "all_probs": all_probs
+        }
+
+    else:
+        pred = predict(model, image_tensor)
+        attentions = None
 
     if len(pred["positive_findings"]) == 0:
         return {
@@ -85,38 +106,41 @@ def run(image_path, model_name="densenet121_nih"):
         }
 
     # ===============================
-    # SELECT TOP DISEASE
+    # TOP DISEASE
     # ===============================
     top_label, top_prob = max(
         pred["all_probs"].items(),
         key=lambda x: x[1]
     )
-    class_idx = list(pred["all_probs"].keys()).index(top_label)
+    class_idx = NIH_LABELS.index(top_label)
 
     # ===============================
-    # GRAD-CAM
+    # HEATMAP
     # ===============================
-    heatmap = generate_heatmap(
-        model,
-        image_tensor,
-        img_rgb,
-        class_idx
-    )
+    if is_vit:
+        heatmap, gray_cam = generate_vit_attention(
+            attentions,
+            img_rgb
+        )
+    else:
+        heatmap = generate_heatmap(
+            model,
+            image_tensor,
+            img_rgb,
+            class_idx
+        )
+        gray_cam = cv2.cvtColor(
+            heatmap,
+            cv2.COLOR_RGB2GRAY
+        ) / 255.0
 
-    heatmap_path = "outputs/heatmap.png"
     cv2.imwrite(
-        heatmap_path,
+        "outputs/heatmap.png",
         cv2.cvtColor(heatmap, cv2.COLOR_RGB2BGR)
     )
 
-    # ===============================
-    # ROI MASK (OPTIONAL)
-    # ===============================
-    gray_cam = cv2.cvtColor(heatmap, cv2.COLOR_RGB2GRAY) / 255.0
     mask = segment_from_cam(gray_cam)
-
-    mask_path = "outputs/mask.png"
-    cv2.imwrite(mask_path, mask)
+    cv2.imwrite("outputs/mask.png", mask)
 
     return {
         "model": model_name,
@@ -126,7 +150,7 @@ def run(image_path, model_name="densenet121_nih"):
             "label": top_label,
             "probability": float(top_prob)
         },
-        "heatmap": heatmap_path,
-        "roi_mask": mask_path,
+        "heatmap": "outputs/heatmap.png",
+        "roi_mask": "outputs/mask.png",
         "note": "For clinical decision support only. Not a medical diagnosis."
     }

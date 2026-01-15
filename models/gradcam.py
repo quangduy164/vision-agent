@@ -4,11 +4,21 @@ from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 import numpy as np
 
 
+def get_backbone(model):
+    """
+    TorchXRayVision:
+    - ResNet: model.model tồn tại
+    - DenseNet: model chính là backbone
+    """
+    if hasattr(model, "model"):
+        return model.model
+    return model
+
 def get_target_layer(model):
     """
     TorchXRayVision wraps torchvision backbone inside model.model
     """
-    backbone = model.model
+    backbone = get_backbone(model)
 
     # DenseNet
     if hasattr(backbone, "features"):
