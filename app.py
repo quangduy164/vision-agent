@@ -13,7 +13,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 @app.post("/analyze-image")
 async def analyze_image(
     file: UploadFile = File(...),
-    model_name: str = "medvit_base_nih"
+    model_name: str = "vit_base_nih"
 ):
     image_path = os.path.join(UPLOAD_DIR, file.filename)
 

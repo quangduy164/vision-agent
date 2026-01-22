@@ -14,6 +14,9 @@ from models.vit_attention import generate_vit_attention
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
+# ===============================
+# Crop lung region (heuristic)
+# ===============================
 def crop_lung_region(img: Image.Image):
     w, h = img.size
     return img.crop((
@@ -24,24 +27,29 @@ def crop_lung_region(img: Image.Image):
     ))
 
 
+# ===============================
+# MAIN PIPELINE
+# ===============================
 def run(image_path, model_name="densenet121_nih"):
     os.makedirs("outputs", exist_ok=True)
 
     model = load_model(model_name)
-    is_vit = "vit" in model_name
+    is_vit = model_name == "vit_base_nih"
     is_resnet = "resnet50" in model_name
 
     IMG_SIZE = 512 if is_resnet else 224
 
     # ===============================
-    # LOAD IMAGE
+    # LOAD & PREPROCESS IMAGE
     # ===============================
     if is_vit:
+        # ---- ViT NIH (RGB) ----
         img = Image.open(image_path).convert("RGB")
         img = crop_lung_region(img)
-        img = img.resize((IMG_SIZE, IMG_SIZE))
+        img = img.resize((224, 224))
 
         img_np = np.array(img).astype(np.float32) / 255.0
+
         image_tensor = (
             torch.from_numpy(img_np)
             .permute(2, 0, 1)
@@ -52,6 +60,7 @@ def run(image_path, model_name="densenet121_nih"):
         img_rgb = img_np
 
     else:
+        # ---- CNN NIH (Grayscale) ----
         img = Image.open(image_path).convert("L")
         img = crop_lung_region(img)
         img = img.resize((IMG_SIZE, IMG_SIZE))
@@ -75,43 +84,37 @@ def run(image_path, model_name="densenet121_nih"):
     # ===============================
     if is_vit:
         with torch.no_grad():
-            logits, attentions = model(
-                image_tensor
-            )
-            probs = torch.sigmoid(logits).squeeze().cpu().numpy()
+            logits, attentions = model(image_tensor)
 
+        probs = torch.sigmoid(logits).squeeze().cpu().numpy()
         all_probs = dict(zip(NIH_LABELS, probs.tolist()))
-
-        positives = [
-            {"disease": k, "probability": float(v)}
-            for k, v in all_probs.items()
-            if v >= 0.5
-        ]
-
-        pred = {
-            "positive_findings": positives,
-            "all_probs": all_probs
-        }
 
     else:
         pred = predict(model, image_tensor)
+        all_probs = pred["all_probs"]
         attentions = None
 
-    if len(pred["positive_findings"]) == 0:
+    # ===============================
+    # POSITIVE FINDINGS
+    # ===============================
+    positives = [
+        {"disease": k, "probability": float(v)}
+        for k, v in all_probs.items()
+        if v >= 0.5
+    ]
+
+    if len(positives) == 0:
         return {
             "model": model_name,
             "positive_findings": [],
-            "all_probabilities": pred["all_probs"],
+            "all_probabilities": all_probs,
             "note": "No confident abnormal findings detected."
         }
 
     # ===============================
     # TOP DISEASE
     # ===============================
-    top_label, top_prob = max(
-        pred["all_probs"].items(),
-        key=lambda x: x[1]
-    )
+    top_label, top_prob = max(all_probs.items(), key=lambda x: x[1])
     class_idx = NIH_LABELS.index(top_label)
 
     # ===============================
@@ -129,10 +132,7 @@ def run(image_path, model_name="densenet121_nih"):
             img_rgb,
             class_idx
         )
-        gray_cam = cv2.cvtColor(
-            heatmap,
-            cv2.COLOR_RGB2GRAY
-        ) / 255.0
+        gray_cam = cv2.cvtColor(heatmap, cv2.COLOR_RGB2GRAY) / 255.0
 
     cv2.imwrite(
         "outputs/heatmap.png",
@@ -142,10 +142,13 @@ def run(image_path, model_name="densenet121_nih"):
     mask = segment_from_cam(gray_cam)
     cv2.imwrite("outputs/mask.png", mask)
 
+    # ===============================
+    # FINAL RESULT
+    # ===============================
     return {
         "model": model_name,
-        "positive_findings": pred["positive_findings"],
-        "all_probabilities": pred["all_probs"],
+        "positive_findings": positives,
+        "all_probabilities": all_probs,
         "top_disease": {
             "label": top_label,
             "probability": float(top_prob)
