@@ -1,48 +1,35 @@
+# models/gradcam.py
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.image import show_cam_on_image
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 import numpy as np
-
+import torch
+import cv2
 
 def get_target_layer(model):
     """
-    TorchXRayVision wraps torchvision backbone inside model.model
+    Lấy layer cuối của DenseNet121 để soi.
     """
-    backbone = model.model
+    if hasattr(model, "features"):
+        return model.features.denseblock4[-1]
+    raise ValueError("Không tìm thấy layer features (Chỉ hỗ trợ DenseNet/ResNet)")
 
-    # DenseNet
-    if hasattr(backbone, "features"):
-        return backbone.features.denseblock4
+def generate_heatmap(model, image_tensor, image_origin_np, target_category_idx=None):
+    # 1. Xác định Layer
+    target_layers = [get_target_layer(model)]
 
-    # ResNet
-    if hasattr(backbone, "layer4"):
-        return backbone.layer4[-1]
+    # 2. Khởi tạo GradCAM
+    cam = GradCAM(model=model, target_layers=target_layers)
 
-    raise ValueError("Unsupported model architecture for Grad-CAM")
+    # 3. Xác định mục tiêu
+    targets = None
+    if target_category_idx is not None:
+        targets = [ClassifierOutputTarget(target_category_idx)]
 
+    # 4. Chạy Grad-CAM
+    grayscale_cam = cam(input_tensor=image_tensor, targets=targets)[0, :]
 
-def generate_heatmap(model, image_tensor, image_np, class_idx):
-    target_layer = get_target_layer(model)
-
-    cam = GradCAM(
-        model=model,
-        target_layers=[target_layer]
-    )
-
-    targets = [ClassifierOutputTarget(class_idx)]
-
-    grayscale_cam = cam(
-        input_tensor=image_tensor,
-        targets=targets
-    )[0]
-
-    heatmap = show_cam_on_image(
-        image_np.astype(np.float32),
-        grayscale_cam,
-        use_rgb=True
-    )
-
-    # VERY IMPORTANT: cleanup hooks (FastAPI ổn định)
-    cam.activations_and_grads.release()
-
-    return heatmap
+    # 5. Phủ màu
+    visualization = show_cam_on_image(image_origin_np, grayscale_cam, use_rgb=True)
+    
+    return visualization, grayscale_cam

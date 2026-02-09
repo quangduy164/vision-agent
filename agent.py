@@ -1,3 +1,4 @@
+# agent.py
 import os
 import cv2
 import torch
@@ -5,128 +6,146 @@ import numpy as np
 from PIL import Image
 import torchxrayvision as xrv
 
+# Import các module vệ tinh
 from models.classifier import load_model, predict
 from models.gradcam import generate_heatmap
-from models.segmenter import segment_from_cam
+from models.segmenter import segment_from_cam, find_contours, get_location_text # <--- Đã thêm get_location_text
+from models.bridge import generate_prompt
+from models.decoder import BioGPTDecoder
 
+# --- CẤU HÌNH ---
+CONFIDENCE_THRESHOLD = 0.64 
+MODEL_NAME = "densenet121_all"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+class MedicalVisionAgent:
+    def __init__(self):
+        print("\n" + "="*40)
+        print(f"🤖 INITIALIZING AI SYSTEM ON {DEVICE}")
+        print("="*40)
+        
+        # 1. Load Mắt (DenseNet)
+        self.vision_model = load_model(MODEL_NAME)
+        
+        # 2. Load Miệng (BioGPT)
+        self.language_decoder = BioGPTDecoder()
+        
+        print("\n✅ SYSTEM READY TO SERVE.\n")
 
-def crop_lung_region(img: Image.Image):
-    """
-    Crop bỏ cổ, chữ, mép trên/dưới
-    (heuristic, KHÔNG phải segmentation)
-    """
-    w, h = img.size
-    return img.crop((
-        int(0.15 * w),
-        int(0.18 * h),
-        int(0.85 * w),
-        int(0.92 * h)
-    ))
+    def analyze(self, image_path, output_dir="outputs"):
+        os.makedirs(output_dir, exist_ok=True)
+        filename = os.path.basename(image_path)
+        
+        # --- BƯỚC 1: XỬ LÝ ẢNH ---
+        try:
+            img_pil = Image.open(image_path).convert("L").resize((224, 224))
+            img_np = np.array(img_pil)
+            img_vis = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR) # Ảnh để vẽ
+            
+            # Chuẩn hóa cho Model
+            img_norm = xrv.datasets.normalize(img_np, maxval=255)
+            img_tensor = torch.from_numpy(img_norm).unsqueeze(0).unsqueeze(0).to(DEVICE)
+        except Exception as e:
+            return {"error": f"Lỗi đọc ảnh: {str(e)}"}
 
+        # --- BƯỚC 2: CHẨN ĐOÁN (Vision) ---
+        results = predict(self.vision_model, img_tensor)
+        sorted_probs = dict(sorted(results.items(), key=lambda item: item[1], reverse=True))
+        top_disease = list(sorted_probs.keys())[0]
+        top_prob = sorted_probs[top_disease]
 
-def run(image_path, model_name="densenet121_nih"):
-    os.makedirs("outputs", exist_ok=True)
+        # Xác định trạng thái
+        if top_prob < CONFIDENCE_THRESHOLD:
+            final_diagnosis = "No Finding"
+            status = "Normal"
+        else:
+            final_diagnosis = top_disease
+            status = "Abnormal"
+        
+        print(f"🔍 Analyzed {filename}: {final_diagnosis} ({top_prob:.2%})")
 
-    # ===============================
-    # LOAD MODEL
-    # ===============================
-    model = load_model(model_name).to(DEVICE)
-    model.eval()
+        # --- BƯỚC 3: TRÍCH XUẤT ĐẶC TRƯNG THỊ GIÁC (Visual Feature Extraction) ---
+        # Khởi tạo giá trị mặc định (cho trường hợp Normal)
+        loc_text = "chest"
+        size_text = "moderate"
+        side_text = "unspecified"
+        heatmap_vis = None
+        mask = None
 
-    # ===============================
-    # MODEL-SPECIFIC CONFIG
-    # ===============================
-    if "resnet50" in model_name:
-        IMG_SIZE = 512
-    else:
-        IMG_SIZE = 224
+        if status == "Abnormal":
+            # 1. Tìm layer bệnh
+            target_idx = self.vision_model.pathologies.index(final_diagnosis)
+            
+            # 2. Chạy Grad-CAM (Chỉ chạy 1 lần duy nhất ở đây)
+            heatmap_vis, gray_cam = generate_heatmap(
+                self.vision_model, img_tensor, img_vis.astype(np.float32)/255.0, target_idx
+            )
+            
+            # 3. Phân vùng (Segmentation)
+            mask = segment_from_cam(gray_cam, threshold=gray_cam.max() * 0.6)
+            
+            # 4. Phân tích vị trí & kích thước (để nạp cho BioGPT)
+            loc_text, size_text, side_text = get_location_text(mask, 224, 224)
+            print(f"📍 AI Vision: Found {size_text} area in {loc_text}")
 
-    # ===============================
-    # LOAD IMAGE (NIH: GRAYSCALE)
-    # ===============================
-    img = Image.open(image_path).convert("L")
-    img = crop_lung_region(img)
-    img = img.resize((IMG_SIZE, IMG_SIZE))
+        # --- BƯỚC 4: TẠO PROMPT THÔNG MINH (Bridge) ---
+        # Truyền toàn bộ thông tin thị giác vào cầu nối
+        prompt = generate_prompt(
+            diagnosis=final_diagnosis,
+            confidence=top_prob,
+            location=loc_text,
+            size=size_text,
+            side=side_text,
+            threshold=CONFIDENCE_THRESHOLD
+        )
+        print(f"🌉 Bridge Prompt: {prompt[:80]}...")
 
-    # PIL → numpy
-    img_np = np.array(img).astype(np.float32)
+        # --- BƯỚC 5: SINH BÁO CÁO CHI TIẾT (Language Generation) ---
+        report_text = self.language_decoder.generate_report(prompt)
+        print(f"📝 BioGPT Report: {report_text[:100]}...")
 
-    # ===============================
-    # NIH NORMALIZATION (VERY IMPORTANT)
-    # [0,255] → [-1024,1024]
-    # ===============================
-    img_np = xrv.datasets.normalize(img_np, maxval=255)
+        # --- BƯỚC 6: VẼ VÀ LƯU ẢNH (Visualization) ---
+        save_path = os.path.join(output_dir, f"result_{filename}")
+        
+        if status == "Abnormal" and mask is not None:
+            # Vẽ đường bao vùng bệnh
+            contours = find_contours(mask)
+            cv2.drawContours(img_vis, contours, -1, (0, 255, 255), 2)
+            
+            # Ghi tên bệnh + %
+            label = f"{final_diagnosis}: {top_prob*100:.1f}%"
+            cv2.putText(img_vis, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            
+            # Ghi thêm vị trí tìm được (Debug)
+            loc_label = f"Loc: {loc_text}"
+            cv2.putText(img_vis, loc_label, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        else:
+            # Ghi nhãn bình thường
+            cv2.putText(img_vis, "Normal / No Findings", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-    # numpy → torch tensor [1,1,H,W]
-    image_tensor = torch.from_numpy(img_np)
-    image_tensor = image_tensor.unsqueeze(0).unsqueeze(0).to(DEVICE)
+        cv2.imwrite(save_path, img_vis)
 
-    # ===============================
-    # VIS IMAGE FOR GRAD-CAM
-    # [-1024,1024] → [0,1]
-    # ===============================
-    img_vis = (img_np / 1024.0 + 1.0) / 2.0
-    img_vis = np.clip(img_vis, 0, 1)
-    img_rgb = np.stack([img_vis] * 3, axis=-1)
-
-    # ===============================
-    # PREDICTION
-    # ===============================
-    pred = predict(model, image_tensor)
-
-    if len(pred["positive_findings"]) == 0:
         return {
-            "model": model_name,
-            "positive_findings": [],
-            "all_probabilities": pred["all_probs"],
-            "note": "No confident abnormal findings detected."
+            "image": filename,
+            "status": status,
+            "diagnosis": final_diagnosis,
+            "confidence": float(top_prob),
+            "visual_findings": {
+                "location": loc_text,
+                "size": size_text,
+                "side": side_text
+            },
+            "report": report_text,
+            "output_image": save_path,
+            "all_probabilities": sorted_probs
         }
 
-    # ===============================
-    # SELECT TOP DISEASE
-    # ===============================
-    top_label, top_prob = max(
-        pred["all_probs"].items(),
-        key=lambda x: x[1]
-    )
-    class_idx = list(pred["all_probs"].keys()).index(top_label)
-
-    # ===============================
-    # GRAD-CAM
-    # ===============================
-    heatmap = generate_heatmap(
-        model,
-        image_tensor,
-        img_rgb,
-        class_idx
-    )
-
-    heatmap_path = "outputs/heatmap.png"
-    cv2.imwrite(
-        heatmap_path,
-        cv2.cvtColor(heatmap, cv2.COLOR_RGB2BGR)
-    )
-
-    # ===============================
-    # ROI MASK (OPTIONAL)
-    # ===============================
-    gray_cam = cv2.cvtColor(heatmap, cv2.COLOR_RGB2GRAY) / 255.0
-    mask = segment_from_cam(gray_cam)
-
-    mask_path = "outputs/mask.png"
-    cv2.imwrite(mask_path, mask)
-
-    return {
-        "model": model_name,
-        "positive_findings": pred["positive_findings"],
-        "all_probabilities": pred["all_probs"],
-        "top_disease": {
-            "label": top_label,
-            "probability": float(top_prob)
-        },
-        "heatmap": heatmap_path,
-        "roi_mask": mask_path,
-        "note": "For clinical decision support only. Not a medical diagnosis."
-    }
+# --- TEST LOCAL ---
+if __name__ == "__main__":
+    agent = MedicalVisionAgent()
+    # Thử một ảnh mẫu
+    test_img = "uploads/00000001_000.png"
+    if os.path.exists(test_img):
+        agent.analyze(test_img)
+    else:
+        print("Vui lòng tải ảnh vào thư mục uploads/ để test.")
