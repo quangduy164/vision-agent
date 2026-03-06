@@ -14,7 +14,7 @@ from models.bridge import generate_prompt
 from models.decoder import BioGPTDecoder
 
 # --- CẤU HÌNH ---
-CONFIDENCE_THRESHOLD = 0.64 
+CONFIDENCE_THRESHOLD = 0.63 
 MODEL_NAME = "densenet121_all"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
