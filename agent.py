@@ -14,8 +14,8 @@ from models.bridge import generate_prompt
 from models.decoder import BioGPTDecoder
 
 # --- CẤU HÌNH ---
-CONFIDENCE_THRESHOLD = 0.63 
-MODEL_NAME = "densenet121_all"
+CONFIDENCE_THRESHOLD = 0.45 
+MODEL_NAME = "best_multilabel_xrv.pth"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 class MedicalVisionAgent:
@@ -55,7 +55,7 @@ class MedicalVisionAgent:
         top_prob = sorted_probs[top_disease]
 
         # Xác định trạng thái
-        if top_prob < CONFIDENCE_THRESHOLD:
+        if top_prob < CONFIDENCE_THRESHOLD or top_disease == "No Finding":
             final_diagnosis = "No Finding"
             status = "Normal"
         else:
