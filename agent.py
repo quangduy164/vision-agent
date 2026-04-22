@@ -7,14 +7,13 @@ from PIL import Image
 import torchxrayvision as xrv
 
 # Import các module vệ tinh
-from models.classifier import load_model, predict
+from models.classifier import load_ensemble_models, predict_ensemble, get_threshold, CLASSES
 from models.gradcam import generate_heatmap
 from models.segmenter import segment_from_cam, find_contours, get_location_text # <--- Đã thêm get_location_text
 from models.bridge import generate_prompt
 from models.decoder import BioGPTDecoder
 
 # --- CẤU HÌNH ---
-CONFIDENCE_THRESHOLD = 0.45 
 MODEL_NAME = "best_multilabel_xrv.pth"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -24,8 +23,8 @@ class MedicalVisionAgent:
         print(f"🤖 INITIALIZING AI SYSTEM ON {DEVICE}")
         print("="*40)
         
-        # 1. Load Mắt (DenseNet)
-        self.vision_model = load_model(MODEL_NAME)
+        # 1. Load Mắt (Ensemble: DenseNet + ResNet50)
+        self.model_dense, self.model_res, self.class_mapping_res = load_ensemble_models(MODEL_NAME)
         
         # 2. Load Miệng (BioGPT)
         self.language_decoder = BioGPTDecoder()
@@ -38,24 +37,29 @@ class MedicalVisionAgent:
         
         # --- BƯỚC 1: XỬ LÝ ẢNH ---
         try:
-            img_pil = Image.open(image_path).convert("L").resize((224, 224))
-            img_np = np.array(img_pil)
-            img_vis = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR) # Ảnh để vẽ
-            
-            # Chuẩn hóa cho Model
+            img_pil = Image.open(image_path).convert("L")
+            img_pil_224 = img_pil.resize((224, 224))
+            img_np = np.array(img_pil_224)
+            img_vis = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
+
+            # Tensor 224x224 cho Grad-CAM (DenseNet)
             img_norm = xrv.datasets.normalize(img_np, maxval=255)
             img_tensor = torch.from_numpy(img_norm).unsqueeze(0).unsqueeze(0).to(DEVICE)
         except Exception as e:
             return {"error": f"Lỗi đọc ảnh: {str(e)}"}
 
-        # --- BƯỚC 2: CHẨN ĐOÁN (Vision) ---
-        results = predict(self.vision_model, img_tensor)
+        # --- BƯỚC 2: CHẨN ĐOÁN (Ensemble Vision) ---
+        results = predict_ensemble(
+            self.model_dense, self.model_res, self.class_mapping_res, img_pil
+        )
         sorted_probs = dict(sorted(results.items(), key=lambda item: item[1], reverse=True))
-        top_disease = list(sorted_probs.keys())[0]
-        top_prob = sorted_probs[top_disease]
 
-        # Xác định trạng thái
-        if top_prob < CONFIDENCE_THRESHOLD or top_disease == "No Finding":
+        # Áp dụng ngưỡng tối ưu theo từng bệnh
+        top_disease = list(sorted_probs.keys())[0]
+        top_prob    = sorted_probs[top_disease]
+        threshold   = get_threshold(top_disease)
+
+        if top_prob < threshold or top_disease == "No Finding":
             final_diagnosis = "No Finding"
             status = "Normal"
         else:
@@ -73,12 +77,12 @@ class MedicalVisionAgent:
         mask = None
 
         if status == "Abnormal":
-            # 1. Tìm layer bệnh
-            target_idx = self.vision_model.pathologies.index(final_diagnosis)
+            # 1. Tìm layer bệnh (dùng DenseNet cho Grad-CAM vì nó có pathologies map)
+            target_idx = self.model_dense.pathologies.index(final_diagnosis)
             
-            # 2. Chạy Grad-CAM (Chỉ chạy 1 lần duy nhất ở đây)
+            # 2. Chạy Grad-CAM (dùng DenseNet + tensor 224x224)
             heatmap_vis, gray_cam = generate_heatmap(
-                self.vision_model, img_tensor, img_vis.astype(np.float32)/255.0, target_idx
+                self.model_dense, img_tensor, img_vis.astype(np.float32)/255.0, target_idx
             )
             
             # 3. Phân vùng (Segmentation)
@@ -96,7 +100,7 @@ class MedicalVisionAgent:
             location=loc_text,
             size=size_text,
             side=side_text,
-            threshold=CONFIDENCE_THRESHOLD
+            threshold=threshold
         )
         print(f"🌉 Bridge Prompt: {prompt[:80]}...")
 

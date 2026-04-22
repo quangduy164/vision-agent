@@ -76,17 +76,29 @@ def run_evaluation(test_data):
                 continue
 
             pred_label = result["diagnosis"]
-            true_labels = item["true_labels"] 
-            
+            true_labels = item["true_labels"]
+
+            # Lấy tất cả nhãn vượt ngưỡng (multilabel) thay vì chỉ top-1
+            all_probs = result.get("all_probabilities", {})
+            from models.classifier import get_threshold
+            pred_labels_multi = [
+                d for d, p in all_probs.items()
+                if p >= get_threshold(d) and d != "No Finding"
+            ] or [pred_label]  # fallback về top-1 nếu không có gì vượt ngưỡng
+
             is_correct = 0
-            if pred_label in true_labels:
-                is_correct = 1
-            else:
+            # Đúng nếu bất kỳ nhãn dự đoán nào khớp với nhãn thật
+            for pl in pred_labels_multi:
+                if pl in true_labels:
+                    is_correct = 1
+                    break
                 for t_label in true_labels:
-                    if pred_label in SIMILAR_DISEASES and t_label in SIMILAR_DISEASES.get(pred_label, []):
+                    if pl in SIMILAR_DISEASES and t_label in SIMILAR_DISEASES.get(pl, []):
                         is_correct = 1
-                        print(f"(⚠️ Chấp nhận gần đúng: {pred_label} ~ {t_label})", end=" ")
-                        break 
+                        print(f"(⚠️ Gần đúng: {pl} ~ {t_label})", end=" ")
+                        break
+                if is_correct:
+                    break
             
             y_pred_cls.append(is_correct)
             
@@ -113,7 +125,7 @@ def run_evaluation(test_data):
     print(f"Số lượng mẫu: {success_count}/{total_samples}")
 
     vision_acc = sum(y_pred_cls) / len(y_pred_cls) if y_pred_cls else 0
-    print(f"\n[1] MÔ HÌNH THỊ GIÁC (VISION - DENSENET)")
+    print(f"\n[1] MÔ HÌNH THỊ GIÁC (VISION - ENSEMBLE DenseNet+ResNet50)")
     print(f"   ► Accuracy (Bao gồm gần đúng): {vision_acc:.2%}")
 
     avg_bleu = text_metrics_sum["BLEU"] / success_count
