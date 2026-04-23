@@ -82,7 +82,7 @@ class MedicalAgentOrchestrator:
 
         logger.info(f"[{session_id}] Multi-Agent System ready.")
 
-    def analyze(self, image_path: str, output_dir: str = "outputs") -> dict:
+    def analyze(self, image_path: str, output_dir: str = "outputs", lang: str = "en") -> dict:
         """
         Phân tích ảnh X-quang qua 3 agents.
         Trả về dict tương thích với interface cũ + thêm key 'safety_reviewed'.
@@ -113,7 +113,7 @@ class MedicalAgentOrchestrator:
 
         # ── AGENT 2: Explanation ─────────────────────────────────────────
         try:
-            explanation_out = self.explanation_agent.run(vision_out)
+            explanation_out = self.explanation_agent.run(vision_out, lang=lang)
         except Exception as e:
             logger.error(f"[{session_id}] ExplanationAgent failed: {e}", exc_info=True)
             explanation_out = {"report": "Report generation failed. Please consult a physician."}
@@ -122,7 +122,7 @@ class MedicalAgentOrchestrator:
 
         # ── AGENT 3: Safety ──────────────────────────────────────────────
         try:
-            safety_out = self.safety_agent.run(explanation_out)
+            safety_out = self.safety_agent.run(explanation_out, lang=lang)
         except Exception as e:
             logger.error(f"[{session_id}] SafetyAgent failed: {e}", exc_info=True)
             safety_out = {

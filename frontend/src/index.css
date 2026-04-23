@@ -2,7 +2,12 @@
 
 body {
   font-family: 'Segoe UI', sans-serif;
-  background: #f0f6ff;
+  background-color: #f0f6ff;
+  background-image: url('./assets/background.png');
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed;
+  background-repeat: no-repeat;
   color: #1a2744;
   min-height: 100vh;
 }

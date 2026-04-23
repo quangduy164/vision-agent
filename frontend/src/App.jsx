@@ -1,5 +1,10 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import './App.css';
+import translations from './i18n';
+import flagEN from './assets/english.png';
+import flagVI from './assets/vietnam.png';
+import logo        from './assets/logo.png';
+import analyzeIcon from './assets/analyze_icon.png';
 
 const API      = '/analyze-image';
 const IMG_BASE = 'http://localhost:8000';
@@ -10,13 +15,39 @@ export default function App() {
   const [result, setResult]   = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState(null);
+  const [lang, setLang]       = useState('en');
+  const [report, setReport]   = useState(null);
   const inputRef              = useRef();
+  const t = translations[lang];
+
+  // Sync report khi có result mới
+  useEffect(() => {
+    if (result) setReport(result.report);
+  }, [result]);
+
+  // Dịch lại report khi đổi ngôn ngữ
+  useEffect(() => {
+    if (!result) return;
+    const findings = result.visual_findings || {};
+    const form = new FormData();
+    form.append('diagnosis',  result.diagnosis);
+    form.append('confidence', result.confidence);
+    form.append('location',   findings.location || 'chest');
+    form.append('size',       findings.size     || 'moderate');
+    form.append('side',       findings.side     || 'unspecified');
+    form.append('lang',       lang);
+    fetch('/translate-report', { method: 'POST', body: form })
+      .then(r => r.json())
+      .then(j => { if (j.success) setReport(j.report); })
+      .catch(() => {});
+  }, [lang]); // eslint-disable-line
 
   const handleFile = (f) => {
     if (!f) return;
     setFile(f);
     setPreview(URL.createObjectURL(f));
     setResult(null);
+    setReport(null);
     setError(null);
   };
 
@@ -33,7 +64,7 @@ export default function App() {
     try {
       const form = new FormData();
       form.append('file', file);
-      const res  = await fetch(API, { method: 'POST', body: form });
+      const res  = await fetch(`${API}?lang=${lang}`, { method: 'POST', body: form });
       const json = await res.json();
       if (!json.success) throw new Error(json.error || 'Server error');
       setResult(json.data);
@@ -52,7 +83,7 @@ export default function App() {
 
   const UploadCard = (
     <section className="card upload-card">
-      <h2>Upload X-Ray Image</h2>
+      <h2>{t.uploadTitle}</h2>
       <div
         className={`dropzone ${preview ? 'has-image' : ''}`}
         onClick={() => inputRef.current.click()}
@@ -63,8 +94,8 @@ export default function App() {
           ? <img src={preview} alt="preview" className="preview-img" />
           : <div className="dropzone-hint">
               <span className="drop-icon">📂</span>
-              <p>Drag & drop or <u>click to select</u></p>
-              <p className="hint-sub">PNG, JPG supported</p>
+              <p>{t.uploadHint} <u>{t.uploadClick}</u></p>
+              <p className="hint-sub">{t.uploadSub}</p>
             </div>
         }
       </div>
@@ -73,7 +104,10 @@ export default function App() {
         onChange={(e) => handleFile(e.target.files[0])} />
       {file && <p className="filename">📄 {file.name}</p>}
       <button className="btn-analyze" onClick={handleAnalyze} disabled={!file || loading}>
-        {loading ? <><span className="spinner" /> Analyzing...</> : '🔍 Analyze'}
+        {loading
+          ? <><span className="spinner" /> {t.analyzing}</>
+          : <>{t.analyzeBtn} <img src={analyzeIcon} alt="" className="btn-icon" /></>
+        }
       </button>
       {error && <p className="error-msg">❌ {error}</p>}
     </section>
@@ -82,53 +116,63 @@ export default function App() {
   return (
     <div className="app">
       <header className="header">
-        <span className="header-icon">🫁</span>
-        <div>
-          <h1>X-Ray AI Agent</h1>
-          <p>Multi-Agent Chest X-Ray Analysis · DenseNet121 + ResNet50 Ensemble</p>
+        <div className="header-brand">
+          <img src={logo} alt="MedAgent AI logo" className="header-logo" />
+          <div className="header-text">
+            <h1>MedAgent AI</h1>
+            <p>{t.appSubtitle}</p>
+          </div>
         </div>
+        <button
+          className={`lang-toggle ${lang === 'vi' ? 'lang-vi' : 'lang-en'}`}
+          onClick={() => setLang(l => l === 'en' ? 'vi' : 'en')}
+          title="Switch language"
+          aria-label="Switch language"
+        >
+          <span className="lang-knob">
+            <img src={lang === 'en' ? flagEN : flagVI} alt={lang} className="lang-flag" />
+          </span>
+          <span className="lang-label">
+            {lang === 'en' ? 'EN' : 'VI'}
+          </span>
+        </button>
       </header>
 
-      {/* ── Chưa có kết quả: chỉ Upload ── */}
+      <div className="content">
+
       {!result && (
-        <div className="layout-single">
-          {UploadCard}
-        </div>
+        <div className="layout-single">{UploadCard}</div>
       )}
 
-      {/* ── Normal: 2 cột bằng nhau [Upload | Analysis] ── */}
       {result && !isAbnormal && (
         <div className="layout-two layout-two--equal">
           {UploadCard}
-          <AnalysisCard result={result} preview={null} heatmapUrl={null} />
+          <AnalysisCard result={result} preview={null} heatmapUrl={null} t={t} />
         </div>
       )}
 
-      {/* ── Abnormal: 2 cột [Upload+Report | Analysis+Heatmap] ── */}
       {result && isAbnormal && (
         <div className="layout-two">
-          {/* Cột trái: Upload + Report */}
           <div className="left-col">
             {UploadCard}
-            <ReportPanel report={result.report} />
+            <ReportPanel report={report || result.report} t={t} />
           </div>
-          {/* Cột phải: Analysis với heatmap, stretch bằng cột trái */}
-          <AnalysisCard result={result} preview={preview} heatmapUrl={heatmapUrl} stretch />
+          <AnalysisCard result={result} preview={preview} heatmapUrl={heatmapUrl} stretch t={t} />
         </div>
       )}
 
-      {/* ── Normal: Report full-width bên dưới ── */}
       {result && !isAbnormal && (
         <div style={{ marginTop: 24 }}>
-          <ReportPanel report={result.report} />
+          <ReportPanel report={report || result.report} t={t} />
         </div>
       )}
+      </div>
     </div>
   );
 }
 
 /* ── Analysis Card ── */
-function AnalysisCard({ result, preview, heatmapUrl, stretch }) {
+function AnalysisCard({ result, preview, heatmapUrl, stretch, t }) {
   const isNormal   = result.status === 'Normal';
   const confidence = (result.confidence * 100).toFixed(1);
   const top5 = Object.entries(result.all_probabilities)
@@ -136,63 +180,66 @@ function AnalysisCard({ result, preview, heatmapUrl, stretch }) {
 
   return (
     <section className={`card result-card ${stretch ? 'stretch' : ''}`}>
-      <h2>Analysis Result</h2>
+      <h2>{t.analysisTitle}</h2>
 
       <div className={`status-badge ${isNormal ? 'normal' : 'abnormal'}`}>
-        {isNormal ? '✅ Normal' : '⚠️ Abnormal'}
+        {isNormal ? t.statusNormal : t.statusAbnormal}
       </div>
 
-      {/* Heatmap - chỉ khi Abnormal */}
       {!isNormal && heatmapUrl && (
         <div className="heatmap-section">
-          <h3>Grad-CAM Heatmap</h3>
+          <h3>{t.heatmapTitle}</h3>
           <div className="heatmap-compare">
             <div className="heatmap-item">
-              <span className="heatmap-label">Original</span>
+              <span className="heatmap-label">{t.heatmapOriginal}</span>
               <img src={preview} alt="original" />
             </div>
             <div className="heatmap-item">
-              <span className="heatmap-label">Activation Map</span>
+              <span className="heatmap-label">{t.heatmapActivation}</span>
               <img src={heatmapUrl} alt="heatmap" />
             </div>
           </div>
         </div>
       )}
 
-      {/* Info: chỉ Diagnosis + Confidence */}
       <div className="info-grid">
-        <InfoItem label="Diagnosis"  value={result.diagnosis} />
-        <InfoItem label="Confidence" value={`${confidence}%`} />
+        <InfoItem label={t.labelDiagnosis}  value={t.diseases[result.diagnosis] || result.diagnosis} />
+        <InfoItem label={t.labelConfidence} value={`${confidence}%`} />
       </div>
 
-      {/* Probability bars */}
       <div className="prob-section">
-        <h3>Top Probabilities</h3>
-        {top5.map(([d, p]) => <ProbBar key={d} disease={d} prob={p} />)}
+        <h3>{t.topProb}</h3>
+        {top5.map(([d, p]) => <ProbBar key={d} disease={d} prob={p} t={t} />)}
       </div>
     </section>
   );
 }
 
 /* ── Report Panel ── */
-function ReportPanel({ report }) {
-  const lines = report.split('\n').filter(Boolean);
-  const body  = lines.filter(l => !l.startsWith('This is'));
-  const disc  = lines.find(l => l.startsWith('This is'));
+function ReportPanel({ report, t }) {
+  const SAFETY_EN = 'This is an AI-assisted analysis';
+  const SAFETY_VI = 'Đây là phân tích hỗ trợ bởi AI';
 
-  // Các từ khóa y khoa quan trọng cần in đậm
+  const lines = report.split('\n').filter(Boolean);
+  const body  = lines.filter(l => !l.startsWith(SAFETY_EN) && !l.startsWith(SAFETY_VI) && !l.startsWith('Cần đối chiếu'));
+  const disc  = lines.find(l => l.startsWith(SAFETY_EN) || l.startsWith(SAFETY_VI) || l.startsWith('Cần đối chiếu'));
+
   const KEYWORDS = [
-    'Findings:', 'Impression:', 'No Finding', 'Normal', 'Abnormal',
-    'Cardiomegaly', 'Atelectasis', 'Effusion', 'Pneumonia', 'Pneumothorax',
-    'Consolidation', 'Edema', 'Nodule', 'Mass', 'Emphysema', 'Fibrosis',
-    'Pleural_Thickening', 'Infiltration', 'Lung Opacity', 'Fracture', 'Hernia',
-    'No acute', 'No pneumothorax', 'No pleural effusion', 'No focal consolidation',
-    'Clinical correlation', 'CT recommended', 'Follow-up',
+    'Findings:', 'Impression:', 'No Finding', 'Cardiomegaly', 'Atelectasis',
+    'Effusion', 'Pneumonia', 'Pneumothorax', 'Consolidation', 'Edema',
+    'Nodule', 'Mass', 'Emphysema', 'Fibrosis', 'Pleural_Thickening',
+    'Infiltration', 'Lung Opacity', 'Fracture', 'Hernia',
+    'No acute', 'Clinical correlation', 'CT recommended', 'Follow-up',
+    'Kết quả:', 'Kết luận:', 'Không phát hiện bất thường',
+    'Tim to', 'Xẹp phổi', 'Đông đặc phổi', 'Phù phổi', 'Tràn dịch màng phổi',
+    'Khí phế thũng', 'Xơ phổi', 'Gãy xương sườn', 'Thoát vị hoành',
+    'Thâm nhiễm phổi', 'Mờ phổi', 'Khối u phổi', 'Nốt phổi',
+    'Dày màng phổi', 'Viêm phổi', 'Tràn khí màng phổi',
+    'Cần đối chiếu lâm sàng', 'Cần chụp CT', 'Cần theo dõi',
   ];
 
   const highlightLine = (text) => {
-    // Tách "Findings:" / "Impression:" thành label riêng
-    const labelMatch = text.match(/^(Findings:|Impression:)(.*)/s);
+    const labelMatch = text.match(/^(Findings:|Impression:|Kết quả:|Kết luận:)(.*)/s);
     if (labelMatch) {
       return (
         <>
@@ -205,8 +252,9 @@ function ReportPanel({ report }) {
   };
 
   const highlightKeywords = (text) => {
-    const regex = new RegExp(`(${KEYWORDS.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'gi');
-    const parts = text.split(regex);
+    const escaped = KEYWORDS.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const regex   = new RegExp(`(${escaped.join('|')})`, 'gi');
+    const parts   = text.split(regex);
     return parts.map((part, i) =>
       regex.test(part)
         ? <strong key={i} className="report-finding">{part}</strong>
@@ -216,7 +264,7 @@ function ReportPanel({ report }) {
 
   return (
     <section className="card report-card">
-      <h2>Radiology Report</h2>
+      <h2>{t.reportTitle}</h2>
       <div className="report-body">
         {body.map((line, i) => <p key={i}>{highlightLine(line)}</p>)}
       </div>
@@ -234,10 +282,11 @@ function InfoItem({ label, value }) {
   );
 }
 
-function ProbBar({ disease, prob }) {
+function ProbBar({ disease, prob, t }) {
+  const displayName = t?.diseases?.[disease] || disease;
   return (
     <div className="prob-row">
-      <span className="prob-name">{disease}</span>
+      <span className="prob-name" title={disease}>{displayName}</span>
       <div className="prob-track">
         <div className="prob-fill" style={{ width: `${Math.min(prob * 100, 100)}%` }} />
       </div>

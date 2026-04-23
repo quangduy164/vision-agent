@@ -14,7 +14,11 @@ logger = logging.getLogger(__name__)
 
 _decoder: BioGPTDecoder | None = None
 
-CLINICAL_DISCLAIMER = "Clinical correlation and physician review are recommended."
+CLINICAL_DISCLAIMER_EN = "Clinical correlation and physician review are recommended."
+CLINICAL_DISCLAIMER_VI = "Cần đối chiếu lâm sàng và xem xét của bác sĩ chuyên khoa."
+
+def _get_disclaimer(lang: str) -> str:
+    return CLINICAL_DISCLAIMER_VI if lang == "vi" else CLINICAL_DISCLAIMER_EN
 
 
 def init_decoder(decoder: BioGPTDecoder):
@@ -30,6 +34,7 @@ def generate_report(
     location: str = "chest",
     size: str = "moderate",
     side: str = "unspecified",
+    lang: str = "en",
 ) -> str:
     """
     Generate a structured radiology report (Findings + Impression) for a chest X-ray.
@@ -49,11 +54,13 @@ def generate_report(
             location=location,
             size=size,
             side=side,
+            lang=lang,
         )
+        disclaimer = _get_disclaimer(lang)
         report = _decoder.generate_report(prompt) if _decoder else prompt
 
-        if CLINICAL_DISCLAIMER not in report:
-            report = f"{report} {CLINICAL_DISCLAIMER}"
+        if disclaimer not in report:
+            report = f"{report} {disclaimer}"
 
         logger.info(f"[generate_report] report generated for '{diagnosis}'.")
         return json.dumps({"report": report})

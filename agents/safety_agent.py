@@ -15,6 +15,12 @@ SAFETY_DISCLAIMER = (
     "Please consult a qualified radiologist or physician."
 )
 
+SAFETY_DISCLAIMER_VI = (
+    "Đây là phân tích hỗ trợ bởi AI chỉ dành cho mục đích nghiên cứu. "
+    "Đây không phải là chẩn đoán y tế. "
+    "Vui lòng tham khảo ý kiến bác sĩ X-quang hoặc bác sĩ chuyên khoa."
+)
+
 # Các pattern vi phạm đạo đức y tế
 _VIOLATION_PATTERNS = [
     # Chẩn đoán xác định
@@ -60,7 +66,27 @@ def _sanitize(text: str) -> str:
 
 
 class SafetyAgent:
-    def run(self, explanation_output: dict) -> dict:
+    def run(self, explanation_output: dict, lang: str = "en") -> dict:
+        report = explanation_output.get("report", "")
+        disclaimer = SAFETY_DISCLAIMER_VI if lang == "vi" else SAFETY_DISCLAIMER
+
+        violations = _detect_violations(report)
+        if violations:
+            logger.warning(
+                f"SafetyAgent: violations detected {violations}. "
+                f"Original report: {report[:200]}"
+            )
+            report = _sanitize(report)
+
+        if SAFETY_DISCLAIMER not in report and SAFETY_DISCLAIMER_VI not in report:
+            report = f"{report}\n\n{disclaimer}"
+
+        logger.info(f"SafetyAgent: review complete. Violations found: {violations or 'none'}")
+        return {
+            "report": report,
+            "safety_reviewed": True,
+            "violations_found": violations,
+        }
         """
         Review report từ Explanation Agent.
         - Phát hiện và sanitize nội dung vi phạm
