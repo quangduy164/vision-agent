@@ -6,7 +6,7 @@ from rouge_score import rouge_scorer
 
 import config
 from prepare_data import load_and_process_data
-from agent import MedicalVisionAgent
+from agents.orchestrator import MedicalAgentOrchestrator
 
 # Tải dữ liệu NLTK
 try:
@@ -41,7 +41,7 @@ def calculate_text_metrics(reference_text, candidate_text):
     }
 
 def run_evaluation(test_data):
-    agent = MedicalVisionAgent()
+    agent = MedicalAgentOrchestrator()
     
     SIMILAR_DISEASES = {
         "Cardiomegaly": ["Enlarged Cardiomediastinum"],

@@ -4,36 +4,51 @@ import os
 import config
 
 def extract_multi_labels(problems_str):
-    """Ánh xạ toàn bộ danh sách bệnh từ cột Problems sang chuẩn 17 nhãn"""
+    """
+    Ánh xạ cột Problems sang 17 nhãn chuẩn.
+    Logic giống hệt script Kaggle: dùng `if` độc lập, check trên toàn bộ chuỗi.
+    """
     problems_str = str(problems_str).lower()
-    
+
     if problems_str == 'nan' or 'normal' in problems_str:
         return ['No Finding']
-    
+
     labels = set()
-    # Duyệt qua TẤT CẢ các bệnh được phân cách bởi dấu chấm phẩy
-    for problem in problems_str.split(';'):
-        p = problem.strip()
-        if "cardiomegaly" in p or "enlarged heart" in p: labels.add("Cardiomegaly")
-        elif "atelectasis" in p: labels.add("Atelectasis")
-        elif "effusion" in p or "fluid" in p: labels.add("Effusion")
-        elif "pneumonia" in p: labels.add("Pneumonia")
-        elif "pneumothorax" in p: labels.add("Pneumothorax")
-        elif "consolidation" in p: labels.add("Consolidation")
-        elif "edema" in p or "congestion" in p: labels.add("Edema")
-        elif "nodule" in p: labels.add("Nodule")
-        elif "mass" in p: labels.add("Mass")
-        elif "hernia" in p: labels.add("Hernia")
-        elif "fibrosis" in p or "scar" in p: labels.add("Fibrosis")
-        elif "thickening" in p or "pleural" in p: labels.add("Pleural_Thickening")
-        elif "emphysema" in p or "copd" in p: labels.add("Emphysema")
-        elif "fracture" in p: labels.add("Fracture")
-        elif "infiltrat" in p: labels.add("Infiltration")
-        elif "opacity" in p: labels.add("Lung Opacity")
-        
+    if "cardiomegaly" in problems_str or "enlarged heart" in problems_str:
+        labels.add("Cardiomegaly")
+    if "atelectasis" in problems_str:
+        labels.add("Atelectasis")
+    if "effusion" in problems_str or "fluid" in problems_str:
+        labels.add("Effusion")
+    if "pneumonia" in problems_str:
+        labels.add("Pneumonia")
+    if "pneumothorax" in problems_str:
+        labels.add("Pneumothorax")
+    if "consolidation" in problems_str:
+        labels.add("Consolidation")
+    if "edema" in problems_str or "congestion" in problems_str:
+        labels.add("Edema")
+    if "nodule" in problems_str:
+        labels.add("Nodule")
+    if "mass" in problems_str:
+        labels.add("Mass")
+    if "hernia" in problems_str:
+        labels.add("Hernia")
+    if "fibrosis" in problems_str or "scar" in problems_str:
+        labels.add("Fibrosis")
+    if "thickening" in problems_str:                        # bỏ "pleural" tránh nhầm với effusion
+        labels.add("Pleural_Thickening")
+    if "emphysema" in problems_str or "copd" in problems_str:
+        labels.add("Emphysema")
+    if "fracture" in problems_str:
+        labels.add("Fracture")
+    if "infiltrat" in problems_str:
+        labels.add("Infiltration")
+    if "opacity" in problems_str:
+        labels.add("Lung Opacity")
+
     if len(labels) == 0:
         return ['No Finding']
-    
     return list(labels)
 
 def load_and_process_data():

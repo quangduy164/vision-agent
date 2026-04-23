@@ -139,7 +139,7 @@ def predict_ensemble(
 ) -> dict:
     """
     Ensemble DenseNet (224) + ResNet50 (512) với trọng số động theo từng bệnh.
-    Áp dụng ngưỡng tối ưu từ BEST_THRESHOLDS.
+    Transform giống hệt Kaggle: grayscale PIL → Resize → ToTensor → Normalize(0.5,0.5) → *1024
     Trả về {disease: prob} với xác suất đã được ensemble.
     """
     t224 = _pil_to_tensor(img_pil, _transform_224)  # [1,1,224,224]
@@ -159,7 +159,7 @@ def predict_ensemble(
                 # ResNet không có "No Finding" -> ước lượng ngược
                 probs_res[i] = 1.0 - float(np.max(out_res))
 
-    # Gộp theo trọng số động
+    # Gộp theo trọng số động (giống Kaggle)
     ensemble_probs = probs_dense * _WEIGHT_DENSE + probs_res * _WEIGHT_RES  # [17]
 
     return dict(zip(CLASSES, ensemble_probs.tolist()))
