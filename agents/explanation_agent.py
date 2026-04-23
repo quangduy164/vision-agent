@@ -17,7 +17,7 @@ class ExplanationAgent:
         init_decoder(decoder)  # inject vào report_tool
         logger.info("ExplanationAgent initialized.")
 
-    def run(self, vision_output: dict) -> dict:
+    def run(self, vision_output: dict, lang: str = "en") -> dict:
         findings = vision_output.get("visual_findings", {})
         result = json.loads(generate_report.invoke({
             "diagnosis":  vision_output.get("top_disease", "No Finding"),
@@ -25,6 +25,7 @@ class ExplanationAgent:
             "location":   findings.get("location", "chest"),
             "size":       findings.get("size", "moderate"),
             "side":       findings.get("side", "unspecified"),
+            "lang":       lang,
         }))
         logger.info("ExplanationAgent: report done.")
         return result
