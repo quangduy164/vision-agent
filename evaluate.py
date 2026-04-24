@@ -5,7 +5,7 @@ from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from rouge_score import rouge_scorer
 
 import config
-from prepare_data import load_and_process_data
+from data_loader import load_and_process_data
 from agents.orchestrator import MedicalAgentOrchestrator
 
 # Tải dữ liệu NLTK
